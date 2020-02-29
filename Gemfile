@@ -1,7 +1,7 @@
 source 'http://rubygems.org'
 
 gem 'rails', "~> 3.2.20"
-gem 'rake', '0.8.7'
+gem 'rake', '13.0.1'
 
 gem 'apipie-rails'
 gem 'aasm'
