@@ -1,7 +1,7 @@
 #encoding: utf-8
 class ObservationsController < ApplicationController
   caches_page :tile_points
-  
+  OBS_LIMIT = 20000  
   WIDGET_CACHE_EXPIRATION = 15.minutes
   caches_action :index, :by_login, :project,
     :expires_in => WIDGET_CACHE_EXPIRATION,
@@ -46,9 +46,9 @@ class ObservationsController < ApplicationController
                             :taxon_stats,
                             :user_stats,
                             :community_taxon_summary,
-                            :map]
+                            :map, :add_identification, :identify]
   load_only = [ :show, :edit, :edit_photos, :update_photos, :destroy,
-    :fields, :viewed_updates, :community_taxon_summary, :update_fields ]
+    :fields, :viewed_updates, :community_taxon_summary, :update_fields]
   before_filter :load_observation, :only => load_only
   blocks_spam :only => load_only, :instance => :observation
   before_filter :require_owner, :only => [:edit, :edit_photos,
@@ -92,11 +92,32 @@ class ObservationsController < ApplicationController
     search_params, find_options = get_search_params(params)
     search_params = site_search_params(search_params)
 
-    if !logged_in? && find_options[:page].to_i > 100
-      authenticate_user!
-      return false
+    obsLimit = @prefs["observations_limits"].to_i
+
+    if logged_in? && current_user.has_role?(:admin)
+      Rails.logger.info 'Admin power'
+    elsif logged_in? && current_user.has_role?(:exporter)
+      if find_options[:page] && find_options[:per_page]
+        nitems = obsLimit
+        if find_options[:page].to_i * find_options[:per_page].to_i > nitems
+          if request.format == :json
+            render json: {message: "You reach #{nitems} items limit"}, status: 403
+            return false
+          end
+        end
+      end
+    elsif find_options[:page] && find_options[:per_page]
+      if find_options[:page].to_i * find_options[:per_page].to_i > 20000
+        if !logged_in? && request.format == :html
+          authenticate_user!
+          return false
+        elsif request.format == :json
+          render json: {message: 'You reach 20,000 items limit'}, status: 403
+          return false
+        end
+      end
     end
-    
+
     if search_params[:q].blank?
       @observations = if perform_caching && (!logged_in? || find_options[:page] == 1)
         cache_params = params.reject{|k,v| %w(controller action format partial).include?(k.to_s)}
@@ -116,7 +137,8 @@ class ObservationsController < ApplicationController
     end
 
     respond_to do |format|
-      
+Rails.logger.info '-'* 100
+Rails.logger.info 'RESPOND_TO' 
       format.html do
         @iconic_taxa ||= []
         grid_affecting_params = request.query_parameters.reject{ |k,v|
@@ -193,7 +215,91 @@ class ObservationsController < ApplicationController
       end
     end
   end
-  
+
+def getUser(token)
+  # token = "f8cf54de29268054c858accee17e13194e1b8bfa"
+  urlInfo = "https://www.authenix.eu/oauth/tokeninfo"
+  clientId = "df4b4fd7-f57c-5c1c-10ce-84dfdbb495a3"
+  clientSecret = "0bd623bdcc5467595c70466c2d755b5821bd14d6b7aa9d8ea6fb0bff716ed0e7"
+  data = "token=#{token}&token_type_hint=access_token"
+  res = `curl -X POST #{urlInfo} -u #{clientId}:#{clientSecret} -H "accept: application/json" -H "Content-Type: application/x-www-form-urlencoded" -d "#{data}"`
+
+  aux = JSON.parse(res)
+  if (aux['active']) 
+    return aux['username']
+  else
+    return nil
+  end
+end
+
+
+  def add_identification
+    #observation_id: 279488,
+    #taxon_id: 942,
+    #user_id: 4032,
+    #type: nil,
+    #body: nil,
+    if params[:taxon]
+      i1 = Identification.new
+      i1.observation_id = params[:observation_id]
+      i1.taxon_id = (Taxon.search params[:taxon].split(/[ _-]/)[0..1]).first.id #params[:taxon_id]
+      i1.user_id = 1
+      i1.origin = getUser(params[:token]) #params[:type]
+      i1.body = params[:body] or "by Cos4Cloud"
+      i1.save
+      render :json => {i1: i1, errors: i1.errors.messages.to_s}
+    else
+      i1 = Comment.new
+      i1.parent_id = params[:observation_id]
+      i1.parent_type = 'Observation'
+      i1.user_id = 1
+      i1.origin = getUser(params[:token]) #params[:type]
+      i1.body = params[:body] or "by Cos4Cloud"
+      i1.save
+      render :json => {i1: i1, errors: i1.errors.messages.to_s}
+    end
+  end
+
+
+
+  def identify
+    @observation = Observation.find(params[:id], :include => [ :quality_metrics,
+                    :photos,
+                    :identifications,
+                    { :taxon => :taxon_names }
+      ])
+    photo = @observation.observation_photos.first.photo.medium_url.sub 'http://', 'https://'
+
+    urlStr = 'https://my-api.plantnet.org/v2/identify/all?';
+    params = "images=#{URI.escape(photo)}&organs=flower&lang=en&api-key=2a10HwuT6PvsSXZFYhBwzlsXO"
+    url = URI(urlStr)
+    url.query = params
+
+    net = Net::HTTP.new(url.host, 443)
+    net.use_ssl = true
+    res = net.get(url.to_s)
+    json = JSON.parse res.body
+    taxon = json["results"][0]["species"]["scientificNameWithoutAuthor"]
+    score = json["results"][0]["score"] * 100
+
+    taxa = (Taxon.search taxon.split(/[ _-]/)[0..1])
+    if taxa.empty?
+      taxa = (Taxon.search taxon.split(/[ _-]/)[0])
+    end
+    
+    if (not taxa.empty?)
+      i1 = Identification.new
+      i1.observation_id = @observation.id
+      i1.taxon_id = taxa.first.id
+      i1.user_id = 2
+      score = score.round(1)
+      i1.body = "#{taxon} #{score}\% by PlantNet"
+      i1.save
+      return render :json => {ok: true, i1: i1, errors: i1.errors.messages.to_s}
+    end
+    render :json => {ok: false}
+  end 
+ 
   def of
     if request.format == :html
       redirect_to observations_path(:taxon_id => params[:id])
@@ -605,6 +711,10 @@ class ObservationsController < ApplicationController
         o.oauth_application = a.becomes(OauthApplication)
       end
       # Get photos
+      puts '@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@'
+      Rails.logger.error "[PHOTOS #{o.inspect}]"
+      puts '@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@'
+
       Photo.descendent_classes.each do |klass|
         klass_key = klass.to_s.underscore.pluralize.to_sym
         if params[klass_key] && params[klass_key][fieldset_index]
@@ -1071,14 +1181,26 @@ class ObservationsController < ApplicationController
   end
 
   def export
+puts 'EXPORT' * 100
+puts 'EXPORT' * 100
+puts 'EXPORT' * 100
+puts 'EXPORT' * 100
+
     search_params, find_options = get_search_params(params)
+puts 'EXPORT >> get_search_params'
     search_params = site_search_params(search_params)
+puts 'EXPORT >> site_search_params'
     if params[:flow_task_id]
+puts 'EXPORT >> params[:flow_task_id]'
       if @flow_task = ObservationsExportFlowTask.find_by_id(params[:flow_task_id])
+puts 'EXPORT >> @flow_task = ObservationsExportFlowTask.find_by_id'
         @export_url = FakeView.uri_join(root_url, @flow_task.outputs.first.file.url).to_s
+puts 'EXPORT >> @export_url = FakeView.uri_join'
       end
     end
+puts '@recent_exports = ObservationsExportFlowTask.where'
     @recent_exports = ObservationsExportFlowTask.where(:user_id => current_user).where("finished_at is not null").order("id desc").limit(10)
+puts '@observation_fields = ObservationField.recently_used_by'
     @observation_fields = ObservationField.recently_used_by(current_user).limit(50).sort_by{|of| of.name.downcase}
     respond_to do |format|
       format.html
@@ -1793,15 +1915,15 @@ class ObservationsController < ApplicationController
   private
   def user_obs_counts(scope, limit = 500)
     user_counts_sql = <<-SQL
-      SELECT
-        o.user_id,
-        count(*) AS count_all
-      FROM
-        (#{scope.to_sql}) AS o
-      GROUP BY
-        o.user_id
-      ORDER BY count_all desc
-      LIMIT #{limit}
+        SELECT
+          o.user_id,
+          count(*) AS count_all
+        FROM
+          (#{scope.to_sql}) AS o
+        GROUP BY
+          o.user_id
+        ORDER BY count_all desc
+        LIMIT #{limit}
     SQL
     ActiveRecord::Base.connection.execute(user_counts_sql)
   end
@@ -2045,6 +2167,11 @@ class ObservationsController < ApplicationController
   def get_search_params(params, options = {})
     # The original params is important for things like pagination, so we 
     # leave it untouched.
+    isAdmin = logged_in? and current_user.has_role?(:admin)
+    isExporter = logged_in? and current_user.has_role?(:exporter)
+    obsLimit = OBS_LIMIT
+    obsLimit = @prefs["observations_limits"].to_i || OBS_LIMIT if @prefs
+
     search_params = params.clone
     
     @swlat = search_params[:swlat] unless search_params[:swlat].blank?
@@ -2071,6 +2198,7 @@ class ObservationsController < ApplicationController
       :include => [:user, {:taxon => [:taxon_names]}, :taggings, {:observation_photos => :photo}],
       :page => search_params[:page]
     }
+
     unless options[:skip_pagination]
       find_options[:page] = find_options[:page].to_i
       find_options[:page] = 1 if find_options[:page] <= 0
@@ -2080,17 +2208,49 @@ class ObservationsController < ApplicationController
       elsif !search_params[:limit].blank?
         find_options.update(:per_page => search_params[:limit])
       end
-      
+
       if find_options[:per_page] && find_options[:per_page].to_i > 200
-        find_options[:per_page] = 200
+        if logged_in? && (isAdmin || isExporter)
+          find_options[:per_page] = find_options[:per_page].to_i
+        else
+          find_options[:per_page] = 200
+        end
       end
       find_options[:per_page] = 30 if find_options[:per_page].to_i <= 0
+
+      # Set 20K limit for no logged users
+      if logged_in? && isAdmin
+        Rails.logger.info 'Set NO limits for admin users'
+      # Set observation_limit preference for isExporter users
+      elsif logged_in? && isExporter
+        if find_options[:page] && find_options[:per_page]
+          nitems = find_options[:page].to_i * find_options[:per_page].to_i
+          if nitems > obsLimit
+            find_options[:limit] = obsLimit
+          end
+        end
+      elsif find_options[:page] && find_options[:per_page]
+        nitems = find_options[:page].to_i * find_options[:per_page].to_i
+        if nitems > OBS_LIMIT
+          find_options[:limit] = OBS_LIMIT
+        end
+      end
     end
-    
-    if find_options[:limit] && find_options[:limit].to_i > 200
-      find_options[:limit] = 200
+
+    if search_params[:limit] && search_params[:limit].to_i > 200
+      if logged_in? && isAdmin
+        find_options[:limit] = search_params[:limit].to_i
+      elsif logged_in? && isExporter
+        if search_params[:limit].to_i > obsLimit
+          find_options[:limit] = obsLimit
+        else
+          find_options[:limit] = search_params[:limit].to_i
+        end
+      else
+        find_options[:limit] = 200
+      end
     end
-    
+
     unless request && request.format && request.format.html?
       find_options[:include] = [{:taxon => :taxon_names}, {:observation_photos => :photo}, :user]
     end
@@ -2156,8 +2316,14 @@ class ObservationsController < ApplicationController
     end
     @identifications = search_params[:identifications]
     @out_of_range = search_params[:out_of_range]
+
     @license = search_params[:license]
+    @licenses = @license.split(' ') if @license.is_a?(String)
+    search_params[:license] = @licenses if (@licenses && @licenses.length > 1)
+
     @photo_license = search_params[:photo_license]
+    @photo_license = @photo_license.split(' ') if @photo_license.is_a?(String)
+    search_params[:photo_license] = @photo_license if (@photo_license && @photo_license.length > 1)
     
     if options[:skip_order]
       search_params.delete(:order)
@@ -2752,6 +2918,11 @@ class ObservationsController < ApplicationController
   
   def render_observations_to_json(options = {})
     if (partial = params[:partial]) && PARTIALS.include?(partial)
+Rails.logger.info 'R' * 100
+Rails.logger.info 'R' * 100
+Rails.logger.info options.inspect
+Rails.logger.info 'R' * 100
+Rails.logger.info 'R' * 100
       Observation.preload_associations(@observations, [
         :stored_preferences,
         { :taxon => :taxon_descriptions },
@@ -2813,6 +2984,12 @@ class ObservationsController < ApplicationController
       if @observations.respond_to?(:scoped)
         Observation.preload_associations(@observations, [ {:observation_photos => { :photo => :user } }, :photos, :iconic_taxon ])
       end
+Rails.logger.info '#'* 100
+Rails.logger.info '#'* 100
+Rails.logger.info @observations.count
+Rails.logger.info opts.inspect
+Rails.logger.info '#'* 100
+Rails.logger.info '#'* 100
       render :json => @observations.to_json(opts)
     end
   end
