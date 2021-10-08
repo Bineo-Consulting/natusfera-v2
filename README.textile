@@ -1,4 +1,4 @@
 h2. Natusfera
 
-Natusfera en un proyecto de código abierto desarrollo de forma conjunta por el CSIC y Bineo Consuling SLU bajo la licencia bajo licencia CC-BY-NC, basado en la plataforma de código abierto iNaturalist.
+Natusfera en un proyecto de código abierto desarrollo de forma conjunta por el CSIC y Bineo Consuling SLU bajo la licencia CC-BY-NC, basado en la plataforma de código abierto iNaturalist.
 
