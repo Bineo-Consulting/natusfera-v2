@@ -180,6 +180,7 @@ GEM
     cocaine (0.5.5)
       climate_control (>= 0.0.3, < 1.0)
     cocoon (1.2.6)
+    concurrent-ruby (1.1.10)
     daemon-spawn (0.4.2)
     daemons (1.1.9)
     database_cleaner (1.0.1)
@@ -254,7 +255,8 @@ GEM
       multi_xml (>= 0.5.2)
     httpi (2.3.0)
       rack
-    i18n (0.7.0)
+    i18n (0.9.5)
+      concurrent-ruby (~> 1.0)
     journey (1.0.4)
     jquery-rails (3.1.2)
       railties (>= 3.0, < 5.0)
@@ -276,7 +278,9 @@ GEM
     memcache-client (1.8.5)
     metaclass (0.0.4)
     mime-types (1.25.1)
-    mimemagic (0.2.1)
+    mimemagic (0.4.3)
+      nokogiri (~> 1)
+      rake
     mocha (1.1.0)
       metaclass (~> 0.0.1)
     multi_json (1.10.1)
