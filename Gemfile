@@ -54,7 +54,7 @@ gem "omniauth-google-oauth2"
 gem 'omniauth-soundcloud'
 gem 'omniauth-twitter'
 gem 'objectify-xml', :require => 'objectify_xml'
-gem "paperclip", "3.4.2"
+gem "paperclip", "4.3.7"
 gem 'delayed_paperclip', :git => 'git://github.com/jrgifford/delayed_paperclip.git'
 gem 'pg'
 gem 'preferences', :git => 'git://github.com/dlabare/preferences.git'
